@@ -57,7 +57,7 @@ def main(url: str, username: str, apikey: str, max_score: int, incident_num: str
     # Here is the query that we will be using to retrieve all submission details
     incident_num = prepare_query_value(incident_num)
     prepared_upload_path = prepare_query_value(upload_path)
-    query = f"metadata.incident_number:\"{incident_num}\" AND max_score:<={max_score} AND metadata.filename:*{prepared_upload_path}*"
+    query = f"metadata.incident_number:\"{incident_num}\" AND max_score:<={max_score} AND metadata.filename:\"{prepared_upload_path}*\""
 
     if is_test:
         print_and_log(log, f"INFO,The query that you will make is: {query}.", logging.DEBUG)
