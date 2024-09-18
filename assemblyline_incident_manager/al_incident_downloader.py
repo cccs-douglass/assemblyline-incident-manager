@@ -149,13 +149,14 @@ def main(url: str, username: str, apikey: str, max_score: int, incident_num: str
             unique_file_paths.add(submitted_filepath)
             unique_file_hashes.add(file_hash)
 
-            if upload_path not in submitted_filepath:
+            _upload_path = upload_path.strip('"')
+            if _upload_path not in submitted_filepath:
                 print_and_log(
                     log,
                     f"INFO,{upload_path} is not in {submitted_filepath} for SID {sid} even though it shares the provided incident number {incident_num}.,{submitted_filepath},{file_hash}",
                     log_level=logging.DEBUG)
                 continue
-            root_filepath = submitted_filepath.replace(upload_path, "")
+            root_filepath = submitted_filepath.replace(_upload_path, "")
             root_filepath = root_filepath.lstrip("\\")
             root_filepath = root_filepath.lstrip("/")
             filepath_to_download = os.path.join(download_path, root_filepath)
