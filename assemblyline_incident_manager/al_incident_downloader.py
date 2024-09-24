@@ -211,34 +211,28 @@ def _thr_queue_reader(file_queue: Queue, al_client_params: dict, max_score: floa
     al_client = get_client(**al_client_params)
     global total_downloaded
     while True:
+        # Try to load files to process. If no files can be found for 30 seconds we assume
+        # processing is complete and exit.
         try:
             sid = file_queue.get(timeout=30)
         except Empty:
             return
 
         try:
-            # Loop until the submission is completed
-            # if not al_client.submission.is_completed(sid):
-            #     missing_sids.append(sid)
-            #     continue
-
-            # Deep dive into the submission to get the files
+            # Load the submission body
             submission = al_client.submission(sid)
 
+            # Report failed submissions as such and take no further actions
             if submission['state'] == "failed":
                 failed.add(sid)
                 continue
             
+            # Submissions that are still processing get delayed
             if submission['state'] == "submitted":
                 print_and_log(log, f"WARNING, Waiting for ongoing submission {sid}", logging.WARN)
                 sleep(0.1)
                 file_queue.put(sid)
                 continue
-
-            submitted_filepath = submission["metadata"]["filename"]
-            file_hash = submission["files"][0]["sha256"]
-            unique_file_paths.add(submitted_filepath)
-            unique_file_hashes.add(file_hash)
 
             # If the submission completes, but the score ends up being higher than the max score
             # This any condition should only contain a single item single SIDs are unique
@@ -249,27 +243,25 @@ def _thr_queue_reader(file_queue: Queue, al_client_params: dict, max_score: floa
             # else:
             #     sids.remove(sid)
 
-
+            # If the submission scored too high drop it and move on
             if submission['max_score'] > max_score:
                 continue
 
+            # Extract file name and hash and format it for local writing
+            submitted_filepath = submission["metadata"]["filename"]
+            file_hash = submission["files"][0]["sha256"]
+            unique_file_paths.add(submitted_filepath)
+            unique_file_hashes.add(file_hash)
 
             _upload_path = upload_path.strip('"')
-            # if _upload_path not in submitted_filepath:
-            #     print_and_log(
-            #         log,
-            #         f"INFO,{upload_path} is not in {submitted_filepath} for SID {sid} even though it shares the provided incident number {incident_num}.,{submitted_filepath},{file_hash}",
-            #         log_level=logging.DEBUG)
-            #     continue
             root_filepath = submitted_filepath.replace(_upload_path, "")
             root_filepath = root_filepath.replace("\\", os.path.sep)
             root_filepath = root_filepath.lstrip("\\")
             root_filepath = root_filepath.lstrip("/")
             filepath_to_download = os.path.normpath(os.path.join(download_path, root_filepath))
-            # print(filepath_to_download)
-            # exit()
+
+            # Make sure the directory we want to write to exists
             try:
-                # print("creating", os.path.dirname(filepath_to_download))
                 os.makedirs(os.path.dirname(filepath_to_download), exist_ok=True)
             except:
                 print(filepath_to_download)
@@ -277,6 +269,7 @@ def _thr_queue_reader(file_queue: Queue, al_client_params: dict, max_score: floa
                 print(root_filepath)
                 raise
 
+            # Check if we don't want to overwrite the file
             if not overwrite_all and add_unique:
                 if os.path.exists(filepath_to_download):
                     print_and_log(
@@ -285,17 +278,24 @@ def _thr_queue_reader(file_queue: Queue, al_client_params: dict, max_score: floa
                         log_level=logging.DEBUG)
                     continue
 
+            # Do the actual download and save
             file_contents = al_client.file.download(file_hash, encoding="raw")
             with open(filepath_to_download, "wb") as f:
                 f.write(file_contents)
             print_and_log(log, f"INFO,Downloaded {filepath_to_download}", logging.DEBUG)
             total_downloaded += 1
+
+            # Because we are cycling through a whole bunch of single use buffers
+            # it playes a mess with the python garbage collector, trigger it
+            # a lot more often than usual
             gc.collect()
 
         except Exception as exception:
+            # If there was a failure due to a missing file mark it as such
             if 'The file was not found in the system.' in str(exception):
                 unrecoverable.add(sid)
             else:
+                # Retry on all other errors
                 print_and_log(log, "ERROR, Error downloading file, will retry: " + str(exception), logging.ERROR)
                 file_queue.put(sid)
 
