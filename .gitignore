@@ -5,3 +5,4 @@ test_dir/*
 *.log
 __pycache__
 *.egg-info/*
+scratch/*

@@ -1,7 +1,7 @@
 import logging
 from typing import List, Optional
 from re import match, compile, VERBOSE
-from assemblyline_client import get_client
+from assemblyline_client import get_client, Client as ALClient
 from threading import Timer
 
 VALID_LOG_LEVELS = [logging.DEBUG, logging.INFO, logging.WARNING, logging.ERROR]
@@ -45,13 +45,13 @@ def init_logging(log_file) -> logging.Logger:
 
 class Client:
     def __init__(self, log: logging.Logger, url: str, username: str, apikey: str, do_not_verify_ssl: bool) -> None:
-        self.al_client = None
+        self.al_client: ALClient = None
         self._thr_refresh_client(log, url, username, apikey, do_not_verify_ssl)
 
     def _thr_refresh_client(
             self, log: logging.Logger, url: str, username: str, apikey: str, do_not_verify_ssl: bool) -> None:
         print_and_log(log, "ADMIN,Refreshing the Assemblyline Client...,,", logging.DEBUG)
-        self.al_client = get_client(url, apikey=(username, apikey), verify=not do_not_verify_ssl)
+        self.al_client: ALClient = get_client(url, apikey=(username, apikey), verify=not do_not_verify_ssl)
         thr = Timer(1800, self._thr_refresh_client, (log, url, username, apikey, do_not_verify_ssl))
         thr.daemon = True
         thr.start()

@@ -16,8 +16,10 @@ import click
 import os
 from time import time, sleep
 from threading import Thread
-from queue import Queue
+from queue import Queue, Empty
+import gc
 
+from assemblyline_client import get_client
 from assemblyline_client import Client4
 from assemblyline_incident_manager.helper import init_logging, print_and_log, _validate_url, prepare_apikey, prepare_query_value, Client
 
@@ -48,7 +50,7 @@ total_downloaded = 0
 @click.option("--num_of_downloaders", default=1, type=click.INT,
               help="The number of threads that will be created to facilitate downloading the files.")
 @click.option("--do_not_verify_ssl", is_flag=True, help="Verify SSL when creating and using the Assemblyline Client.")
-def main(url: str, username: str, apikey: str, max_score: int, incident_num: str, download_path: str, upload_path,
+def main(url: str, username: str, apikey: str, max_score: int, incident_num: str, download_path: str, upload_path: str,
          is_test: bool, num_of_downloaders: int, do_not_verify_ssl: bool):
     """
     Example:
@@ -57,15 +59,16 @@ def main(url: str, username: str, apikey: str, max_score: int, incident_num: str
     # Here is the query that we will be using to retrieve all submission details
     incident_num = prepare_query_value(incident_num)
     prepared_upload_path = prepare_query_value(upload_path)
-    query = f"metadata.incident_number:\"{incident_num}\" AND max_score:<={max_score} AND metadata.filename:\"{prepared_upload_path}*\""
+    query = f"metadata.incident_number:\"{incident_num}\" AND max_score:<={max_score} AND metadata.filename: \"{prepared_upload_path}\""
 
     if is_test:
         print_and_log(log, f"INFO,The query that you will make is: {query}.", logging.DEBUG)
-        print_and_log(log, f"INFO,The files you are querying were uploaded from: {upload_path}.", logging.DEBUG)
+        # print_and_log(log, f"INFO,The files you are querying were uploaded from: {upload_path}.", logging.DEBUG)
         print_and_log(log, f"INFO,The files you are querying are to be downloaded to: {download_path}.", logging.DEBUG)
         return
     else:
         print_and_log(log, f"INFO,Query: {query}.", logging.DEBUG)
+        print_and_log(log, f"INFO,Upload path: {upload_path}.", logging.DEBUG)
 
     # First check if the download path exists
     if not os.path.exists(download_path):
@@ -88,32 +91,46 @@ def main(url: str, username: str, apikey: str, max_score: int, incident_num: str
     apikey_val = prepare_apikey(apikey)
 
     # Create the Assemblyline Client
-    al_client = Client(log, url, username, apikey_val, do_not_verify_ssl).al_client
+    al_client = get_client(url, apikey=(username, apikey_val), verify=not do_not_verify_ssl)
+    # al_client = Client(log, url, username, apikey_val, do_not_verify_ssl).al_client
 
     # Create a generator that yields the SIDs for our query
+    al_client.search.stream._page_size = 2000
+    al_client.search.stream._max_yield_cache = 10000
     submission_res = al_client.search.stream.submission(query, fl="sid")
-    sids = []
+    # sids = []
 
-    print_and_log(log, "INFO,Gathering the submission IDs.", logging.DEBUG)
-    for submission in submission_res:
-        sid = submission["sid"]
-        sids.append(sid)
-    print_and_log(log, f"INFO,There are {len(sids)} submission IDs.", logging.DEBUG)
+    expected_count = al_client.search.submission(query, rows=0, track_total_hits=1_000_000_000)['total']
+    print_and_log(log, f"INFO,expecting {expected_count} ids.", logging.DEBUG)
+
+    start_time = time()
 
     total_already_downloaded = 0
     for _, _, files in os.walk(download_path):
         total_already_downloaded += len(files)
 
-    entered = False
-    file_queue = Queue()
+    file_queue: Queue[str] = Queue()
     workers = []
+    unique_file_paths: set[str] = set()
+    unique_file_hashes: set[str] = set()
 
     for _ in range(num_of_downloaders):
         # Creating a thread containing a unique AL client
-        worker_al_client = Client(log, url, username, apikey_val, do_not_verify_ssl).al_client
+        # worker_al_client = Client(log, url, username, apikey_val, do_not_verify_ssl).al_client
+        # worker_al_client = get_client()
 
         worker = Thread(target=_thr_queue_reader,
-                        args=(file_queue, worker_al_client),
+                        args=(
+                            file_queue, 
+                            {"server": url, "apikey": (username, apikey_val), "verify": not do_not_verify_ssl},
+                            max_score,
+                            upload_path,
+                            download_path,
+                            overwrite_all,
+                            add_unique,
+                            unique_file_paths,
+                            unique_file_hashes
+                        ),
                         daemon=True)
         workers.append(worker)
 
@@ -121,63 +138,20 @@ def main(url: str, username: str, apikey: str, max_score: int, incident_num: str
     for worker in workers:
         worker.start()
 
-    total_submissions_that_match_query = len(sids)
-    unique_file_paths = set()
-    unique_file_hashes = set()
-    start_time = time()
-    # "entered" is used so that we always enter this while loop regardless of completion status of sids
-    while not entered or not all(al_client.submission.is_completed(sid) for sid in sids):
-        entered = True
-        for sid in sids[:]:
-            # Loop until the submission is completed
-            while not al_client.submission.is_completed(sid):
-                sleep(2)
-                continue
-            # If the submission completes, but the score ends up being higher than the max score
-            # This any condition should only contain a single item single SIDs are unique
-            if any(sub["max_score"] > max_score for sub in al_client.search.stream.submission(sid, fl="max_score")):
-                # Remove the SID since it does not meet the given criteria, and move on!
-                sids.remove(sid)
-                continue
-            else:
-                sids.remove(sid)
+    print_and_log(log, "INFO,Gathering the submission IDs.", logging.DEBUG)
+    total_submissions_that_match_query = 0
+    for submission in submission_res:
+        file_queue.put(submission['sid'])
+        total_submissions_that_match_query += 1
 
-            # Deep dive into the submission to get the files
-            submission_details = al_client.submission(sid)
-            submitted_filepath = submission_details["metadata"]["filename"]
-            file_hash = submission_details["files"][0]["sha256"]
-            unique_file_paths.add(submitted_filepath)
-            unique_file_hashes.add(file_hash)
-
-            _upload_path = upload_path.strip('"')
-            if _upload_path not in submitted_filepath:
-                print_and_log(
-                    log,
-                    f"INFO,{upload_path} is not in {submitted_filepath} for SID {sid} even though it shares the provided incident number {incident_num}.,{submitted_filepath},{file_hash}",
-                    log_level=logging.DEBUG)
-                continue
-            root_filepath = submitted_filepath.replace(_upload_path, "")
-            root_filepath = root_filepath.lstrip("\\")
-            root_filepath = root_filepath.lstrip("/")
-            filepath_to_download = os.path.join(download_path, root_filepath)
-            os.makedirs(os.path.dirname(filepath_to_download), exist_ok=True)
-
-            if not overwrite_all and add_unique:
-                if os.path.exists(filepath_to_download):
-                    print_and_log(
-                        log,
-                        f"INFO,{filepath_to_download} has already been downloaded.,{submitted_filepath},{file_hash}",
-                        log_level=logging.DEBUG)
-                    continue
-
-            file_queue.put((file_hash, filepath_to_download))
+    print_and_log(log, f"INFO,There are {total_submissions_that_match_query} submission IDs.", logging.DEBUG)
 
     while file_queue.qsize():
-        print_and_log(log, "INFO,Waiting for the queue to empty...", logging.DEBUG)
-        sleep(1)
+        print_and_log(log, f"INFO,Waiting for the queue to empty. {file_queue.qsize()} files to process.", logging.DEBUG)
+        sleep(30)
 
-    for _ in range(num_of_downloaders):
-        file_queue.put("DONE")
+    # for _ in range(num_of_downloaders):
+    #     file_queue.put("DONE")
 
     # Time to clock out!
     for worker in workers:
@@ -199,7 +173,7 @@ def main(url: str, username: str, apikey: str, max_score: int, incident_num: str
     print_and_log(log, "INFO,Thank you for using Assemblyline :)", logging.DEBUG)
 
 
-def _handle_overwrite(download_dir: str) -> (bool, bool):
+def _handle_overwrite(download_dir: str) -> tuple[bool, bool]:
     overwrite_all = False
     add_unique = False
     overwrite = input(
@@ -223,19 +197,91 @@ def _handle_overwrite(download_dir: str) -> (bool, bool):
     return overwrite_all, add_unique
 
 
-def _thr_queue_reader(file_queue: Queue, al_client: Client4) -> None:
+def _thr_queue_reader(file_queue: Queue, al_client_params: dict, max_score: float, upload_path: str, download_path: str, overwrite_all, add_unique, unique_file_paths, unique_file_hashes) -> None:
+    al_client = get_client(**al_client_params)
     global total_downloaded
     while True:
-        msg = file_queue.get()
-        if msg == "DONE":
+        try:
+            sid = file_queue.get(timeout=60)
+        except Empty:
             return
-        else:
-            sha, download_path = msg
-            file_contents = al_client.file.download(sha, encoding="raw")
-            with open(download_path, "wb") as f:
+
+        try:
+            # Loop until the submission is completed
+            # if not al_client.submission.is_completed(sid):
+            #     missing_sids.append(sid)
+            #     continue
+
+            # Deep dive into the submission to get the files
+            submission = al_client.submission(sid)
+
+            # print(submission)
+            if submission['state'] != "completed":
+                sleep(0.1)
+                file_queue.put(sid)
+                continue
+
+            submitted_filepath = submission["metadata"]["filename"]
+            file_hash = submission["files"][0]["sha256"]
+            unique_file_paths.add(submitted_filepath)
+            unique_file_hashes.add(file_hash)
+
+            # If the submission completes, but the score ends up being higher than the max score
+            # This any condition should only contain a single item single SIDs are unique
+            # if any(sub["max_score"] > max_score for sub in al_client.search.stream.submission(sid, fl="max_score")):
+                # Remove the SID since it does not meet the given criteria, and move on!
+                # sids.remove(sid)
+                # continue
+            # else:
+            #     sids.remove(sid)
+
+
+            if submission['max_score'] > max_score:
+                continue
+
+
+
+            _upload_path = upload_path.strip('"')
+            # if _upload_path not in submitted_filepath:
+            #     print_and_log(
+            #         log,
+            #         f"INFO,{upload_path} is not in {submitted_filepath} for SID {sid} even though it shares the provided incident number {incident_num}.,{submitted_filepath},{file_hash}",
+            #         log_level=logging.DEBUG)
+            #     continue
+            root_filepath = submitted_filepath.replace(_upload_path, "")
+            root_filepath = root_filepath.replace("\\", os.path.sep)
+            root_filepath = root_filepath.lstrip("\\")
+            root_filepath = root_filepath.lstrip("/")
+            filepath_to_download = os.path.normpath(os.path.join(download_path, root_filepath))
+            # print(filepath_to_download)
+            # exit()
+            try:
+                # print("creating", os.path.dirname(filepath_to_download))
+                os.makedirs(os.path.dirname(filepath_to_download), exist_ok=True)
+            except:
+                print(filepath_to_download)
+                print(os.path.dirname(filepath_to_download))
+                print(root_filepath)
+                raise
+
+            if not overwrite_all and add_unique:
+                if os.path.exists(filepath_to_download):
+                    print_and_log(
+                        log,
+                        f"INFO,{filepath_to_download} has already been downloaded.,{submitted_filepath},{file_hash}",
+                        log_level=logging.DEBUG)
+                    continue
+
+            file_contents = al_client.file.download(file_hash, encoding="raw")
+            with open(filepath_to_download, "wb") as f:
                 f.write(file_contents)
-            print_and_log(log, f"INFO,Downloaded {download_path}.,{download_path},{sha}", logging.DEBUG)
+            print_and_log(log, f"INFO,Downloaded {filepath_to_download}", logging.DEBUG)
             total_downloaded += 1
+            gc.collect()
+
+        except Exception as exception:
+            print_and_log(log, "Error downloading file, will retry: " + str(exception), logging.ERROR)
+            file_queue.put(sid)
 
 
 if __name__ == "__main__":
