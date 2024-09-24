@@ -214,7 +214,7 @@ def _thr_queue_reader(file_queue: Queue, al_client_params: dict, max_score: floa
         # Try to load files to process. If no files can be found for 30 seconds we assume
         # processing is complete and exit.
         try:
-            sid = file_queue.get(timeout=30)
+            sid = file_queue.get(timeout=60)
         except Empty:
             return
 
