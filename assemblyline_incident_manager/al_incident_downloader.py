@@ -224,6 +224,7 @@ def _thr_queue_reader(file_queue: Queue, al_client_params: dict, max_score: floa
 
             # print(submission)
             if submission['state'] != "completed":
+                print_and_log(log, f"WARNING, Waiting for {sid}, state is {submission['state']}", logging.WARN)
                 sleep(0.1)
                 file_queue.put(sid)
                 continue
@@ -245,7 +246,6 @@ def _thr_queue_reader(file_queue: Queue, al_client_params: dict, max_score: floa
 
             if submission['max_score'] > max_score:
                 continue
-
 
 
             _upload_path = upload_path.strip('"')
@@ -290,7 +290,7 @@ def _thr_queue_reader(file_queue: Queue, al_client_params: dict, max_score: floa
             if 'The file was not found in the system.' in str(exception):
                 unrecoverable.add(sid)
             else:
-                print_and_log(log, "Error downloading file, will retry: " + str(exception), logging.ERROR)
+                print_and_log(log, "ERROR, Error downloading file, will retry: " + str(exception), logging.ERROR)
                 file_queue.put(sid)
 
 
