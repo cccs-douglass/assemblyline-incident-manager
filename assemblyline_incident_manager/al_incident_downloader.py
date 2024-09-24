@@ -287,7 +287,7 @@ def _thr_queue_reader(file_queue: Queue, al_client_params: dict, max_score: floa
             # Because we are cycling through a whole bunch of single use buffers
             # it playes a mess with the python garbage collector, trigger it
             # a lot more often than usual
-            # gc.collect()
+            gc.collect()
 
         except Exception as exception:
             # If there was a failure due to a missing file mark it as such
