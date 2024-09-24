@@ -113,6 +113,7 @@ def main(url: str, username: str, apikey: str, max_score: int, incident_num: str
     workers = []
     unique_file_paths: set[str] = set()
     unique_file_hashes: set[str] = set()
+    unrecoverable: set[str] = set()
 
     for _ in range(num_of_downloaders):
         # Creating a thread containing a unique AL client
@@ -129,7 +130,8 @@ def main(url: str, username: str, apikey: str, max_score: int, incident_num: str
                             overwrite_all,
                             add_unique,
                             unique_file_paths,
-                            unique_file_hashes
+                            unique_file_hashes,
+                            unrecoverable
                         ),
                         daemon=True)
         workers.append(worker)
@@ -157,7 +159,12 @@ def main(url: str, username: str, apikey: str, max_score: int, incident_num: str
     for worker in workers:
         worker.join()
 
-    print_and_log(log, f"INFO,Download complete!", logging.DEBUG)
+
+    print_and_log(log, f"INFO,Download complete!", logging.INFO)
+    if unrecoverable:
+        print_and_log(log, f"INFO,Unrecoverable files", logging.INFO)
+        print_and_log(log, str(unrecoverable), logging.INFO)
+
     print_and_log(
         log,
         f"INFO,{len(unique_file_paths)} unique file paths found in {total_submissions_that_match_query} submissions that match the query.",
@@ -197,7 +204,7 @@ def _handle_overwrite(download_dir: str) -> tuple[bool, bool]:
     return overwrite_all, add_unique
 
 
-def _thr_queue_reader(file_queue: Queue, al_client_params: dict, max_score: float, upload_path: str, download_path: str, overwrite_all, add_unique, unique_file_paths, unique_file_hashes) -> None:
+def _thr_queue_reader(file_queue: Queue, al_client_params: dict, max_score: float, upload_path: str, download_path: str, overwrite_all, add_unique, unique_file_paths, unique_file_hashes, unrecoverable) -> None:
     al_client = get_client(**al_client_params)
     global total_downloaded
     while True:
@@ -280,8 +287,11 @@ def _thr_queue_reader(file_queue: Queue, al_client_params: dict, max_score: floa
             gc.collect()
 
         except Exception as exception:
-            print_and_log(log, "Error downloading file, will retry: " + str(exception), logging.ERROR)
-            file_queue.put(sid)
+            if 'The file was not found in the system.' in str(exception):
+                unrecoverable.add(sid)
+            else:
+                print_and_log(log, "Error downloading file, will retry: " + str(exception), logging.ERROR)
+                file_queue.put(sid)
 
 
 if __name__ == "__main__":
