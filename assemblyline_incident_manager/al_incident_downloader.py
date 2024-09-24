@@ -114,6 +114,7 @@ def main(url: str, username: str, apikey: str, max_score: int, incident_num: str
     unique_file_paths: set[str] = set()
     unique_file_hashes: set[str] = set()
     unrecoverable: set[str] = set()
+    failed: set[str] = set()
 
     for _ in range(num_of_downloaders):
         # Creating a thread containing a unique AL client
@@ -131,7 +132,8 @@ def main(url: str, username: str, apikey: str, max_score: int, incident_num: str
                             add_unique,
                             unique_file_paths,
                             unique_file_hashes,
-                            unrecoverable
+                            unrecoverable,
+                            failed
                         ),
                         daemon=True)
         workers.append(worker)
@@ -162,8 +164,9 @@ def main(url: str, username: str, apikey: str, max_score: int, incident_num: str
 
     print_and_log(log, f"INFO,Download complete!", logging.INFO)
     if unrecoverable:
-        print_and_log(log, f"INFO,Unrecoverable files", logging.INFO)
-        print_and_log(log, str(unrecoverable), logging.INFO)
+        print_and_log(log, f"INFO,Unrecoverable files {unrecoverable}", logging.INFO)
+    if failed:
+        print_and_log(log, f"INFO,Failed files {failed}", logging.INFO)
 
     print_and_log(
         log,
@@ -204,12 +207,12 @@ def _handle_overwrite(download_dir: str) -> tuple[bool, bool]:
     return overwrite_all, add_unique
 
 
-def _thr_queue_reader(file_queue: Queue, al_client_params: dict, max_score: float, upload_path: str, download_path: str, overwrite_all, add_unique, unique_file_paths, unique_file_hashes, unrecoverable) -> None:
+def _thr_queue_reader(file_queue: Queue, al_client_params: dict, max_score: float, upload_path: str, download_path: str, overwrite_all, add_unique, unique_file_paths, unique_file_hashes, unrecoverable, failed) -> None:
     al_client = get_client(**al_client_params)
     global total_downloaded
     while True:
         try:
-            sid = file_queue.get(timeout=60)
+            sid = file_queue.get(timeout=30)
         except Empty:
             return
 
@@ -222,9 +225,12 @@ def _thr_queue_reader(file_queue: Queue, al_client_params: dict, max_score: floa
             # Deep dive into the submission to get the files
             submission = al_client.submission(sid)
 
-            # print(submission)
-            if submission['state'] != "completed":
-                print_and_log(log, f"WARNING, Waiting for {sid}, state is {submission['state']}", logging.WARN)
+            if submission['state'] == "failed":
+                failed.add(sid)
+                continue
+            
+            if submission['state'] == "submitted":
+                print_and_log(log, f"WARNING, Waiting for ongoing submission {sid}", logging.WARN)
                 sleep(0.1)
                 file_queue.put(sid)
                 continue
