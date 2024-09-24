@@ -279,16 +279,15 @@ def _thr_queue_reader(file_queue: Queue, al_client_params: dict, max_score: floa
                     continue
 
             # Do the actual download and save
-            file_contents = al_client.file.download(file_hash, encoding="raw")
             with open(filepath_to_download, "wb") as f:
-                f.write(file_contents)
+                al_client.file.download(file_hash, encoding="raw", output=f)
             print_and_log(log, f"INFO,Downloaded {filepath_to_download}", logging.DEBUG)
             total_downloaded += 1
 
             # Because we are cycling through a whole bunch of single use buffers
             # it playes a mess with the python garbage collector, trigger it
             # a lot more often than usual
-            gc.collect()
+            # gc.collect()
 
         except Exception as exception:
             # If there was a failure due to a missing file mark it as such
