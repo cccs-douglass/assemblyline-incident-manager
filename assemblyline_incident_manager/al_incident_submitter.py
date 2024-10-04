@@ -253,7 +253,8 @@ def _generate_settings(
             "selected": service_selection,
             "resubmit": ["Dynamic Analysis"] if resubmit_dynamic else []
         },
-        "priority": priority  # Note that the lower the priority queue, the larger the maximum queue size.
+        "priority": priority,  # Note that the lower the priority queue, the larger the maximum queue size.
+        "never_drop": True,
     }
     return settings
 
