@@ -323,8 +323,14 @@ def _ingest_file(
         alert: bool):
     print_and_log(
         log, f"INGEST,{prepared_file_path} ({sha}) is about to be ingested.,{prepared_file_path},{sha}", logging.DEBUG)
-    al_client.ingest(path=file_path, fname=sha, params=settings, alert=alert,
-                     metadata={"filename": file_path, "incident_number": incident_num})
+    al_client.ingest(
+        path=file_path, 
+        fname=sha, 
+        params=settings, 
+        alert=alert,
+        metadata={"filename": file_path, "incident_number": incident_num},
+        nq=incident_num
+    )
     print_and_log(
         log, f"INGEST,{prepared_file_path} ({sha}) has been ingested.,{prepared_file_path},{sha}", logging.DEBUG)
 
