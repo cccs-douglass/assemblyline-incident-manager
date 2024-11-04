@@ -8,6 +8,7 @@ wants to have submitted to Assemblyline for analysis.
 import click
 import logging
 import os
+import uuid
 from hashlib import sha256
 from typing import List
 from time import sleep, time
@@ -110,7 +111,7 @@ def main(
         return
 
     # Setting the parameters
-    settings = _generate_settings(ttl, classification, service_selection, resubmit_dynamic, priority)
+    settings = _generate_settings(ttl, classification, service_selection, resubmit_dynamic, priority, dedup_hashes)
 
     # Confirm that given path is to a directory
     if not os.path.isdir(path):
@@ -245,7 +246,7 @@ def main(
 
 def _generate_settings(
         ttl: int, classification: str, service_selection: List[str],
-        resubmit_dynamic: bool, priority: int) -> dict:
+        resubmit_dynamic: bool, priority: int, dedup_hashes: bool) -> dict:
     settings = {
         "ttl": ttl,
         "classification": classification,
@@ -256,6 +257,14 @@ def _generate_settings(
         "priority": priority,  # Note that the lower the priority queue, the larger the maximum queue size.
         "never_drop": True,
     }
+
+    if not dedup_hashes:
+        settings["service_spec"] = {
+            "dummy": {
+                "ingest_cache_spoil": uuid.uuid4().hex
+            }
+        }
+
     return settings
 
 
