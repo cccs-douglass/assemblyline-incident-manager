@@ -111,7 +111,7 @@ def main(
         return
 
     # Setting the parameters
-    settings = _generate_settings(ttl, classification, service_selection, resubmit_dynamic, priority, dedup_hashes)
+    settings = _generate_settings(ttl, classification, service_selection, resubmit_dynamic, priority)
 
     # Confirm that given path is to a directory
     if not os.path.isdir(path):
@@ -246,7 +246,7 @@ def main(
 
 def _generate_settings(
         ttl: int, classification: str, service_selection: List[str],
-        resubmit_dynamic: bool, priority: int, dedup_hashes: bool) -> dict:
+        resubmit_dynamic: bool, priority: int) -> dict:
     settings = {
         "ttl": ttl,
         "classification": classification,
@@ -257,13 +257,6 @@ def _generate_settings(
         "priority": priority,  # Note that the lower the priority queue, the larger the maximum queue size.
         "never_drop": True,
     }
-
-    if not dedup_hashes:
-        settings["service_spec"] = {
-            "dummy": {
-                "ingest_cache_spoil": uuid.uuid4().hex
-            }
-        }
 
     return settings
 
@@ -329,9 +322,15 @@ def _test_ingest_file(al_client: Client4, settings: dict, incident_num: str, ale
 
 def _ingest_file(
         file_path: str, prepared_file_path: str, sha: str, al_client: Client4, settings: dict, incident_num: str,
-        alert: bool):
+        alert: bool, dedup_hashes: bool):
     print_and_log(
         log, f"INGEST,{prepared_file_path} ({sha}) is about to be ingested.,{prepared_file_path},{sha}", logging.DEBUG)
+
+    if not dedup_hashes:
+        settings = dict(settings)
+        settings.setdefault("service_spec", {})
+        settings["service_spec"]["dummy"] = { "ingest_cache_spoil": uuid.uuid4().hex }
+
     al_client.ingest(
         path=file_path, 
         fname=sha, 
@@ -425,7 +424,7 @@ def _thr_ingest_file(
             return
 
         # Ingestion and logging everything
-        _ingest_file(file_path, prepared_file_path, sha, al_client, settings, incident_num, alert)
+        _ingest_file(file_path, prepared_file_path, sha, al_client, settings, incident_num, alert, dedup_hashes)
         hash_table.append(sha)
 
         # Documenting the hash into the text file
